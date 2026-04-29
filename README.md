@@ -1,4 +1,4 @@
-# vpn
+# tsexit
 
 A throwaway DigitalOcean droplet that runs as a [Tailscale](https://tailscale.com) exit node.
 Spin it up when you want VPN, tear it down when you don't.
