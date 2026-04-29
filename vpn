@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+#
+# vpn — start/stop a DigitalOcean droplet that runs as a Tailscale exit node.
+#
+# Subcommands:
+#   up      Create the droplet (if not already running) from the cloud-config
+#           and print its public IPv4. Idempotent.
+#   down    Destroy the droplet. No-op if it does not exist.
+#   status  Show whether the droplet exists and its IP / region / created-at.
+#
+# Note: `up` returns once DigitalOcean reports the VM as active. Cloud-init
+# (Tailscale install + join) keeps running for ~30-90s after that. Watch
+# `tailscale status` from a tailnet client to see when it joins.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
+
+VPN_NAME="${VPN_NAME:-tailnet-exit-ams}"
+VPN_REGION="${VPN_REGION:-ams3}"
+VPN_SIZE="${VPN_SIZE:-s-1vcpu-512mb-10gb}"
+VPN_IMAGE="${VPN_IMAGE:-ubuntu-24-04-x64}"
+VPN_TAG="${VPN_TAG:-vpn-exit-node}"
+VPN_SSH_KEYS="${VPN_SSH_KEYS:-ssh}"
+VPN_CLOUD_CONFIG="${VPN_CLOUD_CONFIG:-${SCRIPT_DIR}/cloud-config.yaml}"
+# private_networking matches the reference droplet ubuntu-s-1vcpu-512mb-10gb-ams3.
+# droplet_agent is enabled by default; no flag needed.
+VPN_ENABLE_PRIVATE_NETWORKING="${VPN_ENABLE_PRIVATE_NETWORKING:-1}"
+
+die() { echo "error: $*" >&2; exit 1; }
+
+# Read the Tailscale auth key from $TS_AUTHKEY, falling back to macOS Keychain.
+# Item name is configurable so the user can rotate without renaming.
+VPN_AUTHKEY_KEYCHAIN_ITEM="${VPN_AUTHKEY_KEYCHAIN_ITEM:-vpn-tailscale-authkey}"
+load_authkey() {
+  if [[ -n "${TS_AUTHKEY:-}" ]]; then
+    printf '%s' "$TS_AUTHKEY"
+    return
+  fi
+  if command -v security >/dev/null 2>&1; then
+    local k
+    if k="$(security find-generic-password -w -s "$VPN_AUTHKEY_KEYCHAIN_ITEM" -a "$USER" 2>/dev/null)"; then
+      printf '%s' "$k"
+      return
+    fi
+  fi
+  die "no Tailscale auth key available. Either:
+  export TS_AUTHKEY=tskey-auth-...
+or store it in macOS Keychain (one-time):
+  security add-generic-password -s $VPN_AUTHKEY_KEYCHAIN_ITEM -a \$USER -w 'tskey-auth-...'"
+}
+
+require_doctl() {
+  command -v doctl >/dev/null 2>&1 \
+    || die "doctl not found. Install with: brew install doctl"
+  # Probe an endpoint the script actually needs. Avoids /v2/account, which
+  # scoped tokens often don't have access to.
+  doctl compute droplet list --format ID --no-header >/dev/null 2>&1 \
+    || die "doctl can't list droplets — token missing or lacks droplet:read. Run: doctl auth init"
+}
+
+# `doctl compute droplet create --ssh-keys` only accepts numeric IDs and
+# colon-separated MD5 fingerprints (e.g. "aa:bb:..."). Resolve human-friendly
+# names against `doctl compute ssh-key list` and pass the fingerprint through.
+resolve_ssh_keys() {
+  local input="$1" out=() token resolved listing
+  IFS=',' read -ra tokens <<< "$input"
+  for token in "${tokens[@]}"; do
+    token="${token#"${token%%[![:space:]]*}"}"  # ltrim
+    token="${token%"${token##*[![:space:]]}"}"  # rtrim
+    if [[ "$token" =~ ^[0-9]+$ ]] || [[ "$token" =~ ^([0-9a-fA-F]{2}:){15}[0-9a-fA-F]{2}$ ]]; then
+      out+=("$token")
+      continue
+    fi
+    listing="$(doctl compute ssh-key list --format Name,FingerPrint --no-header 2>&1)" || \
+      die "VPN_SSH_KEYS contains the name '$token' but doctl can't list keys to resolve it (need ssh_key:read scope on the token, or pass the fingerprint directly).
+Get the fingerprint locally: ssh-keygen -E md5 -lf ~/.ssh/<key>.pub | awk '{print \$2}' | sed 's/MD5://'"
+    resolved="$(awk -v n="$token" '$1 == n {print $2; exit}' <<< "$listing")"
+    [[ -n "$resolved" ]] || die "no SSH key named '$token' found on this DigitalOcean account"
+    out+=("$resolved")
+  done
+  local IFS=','; echo "${out[*]}"
+}
+
+# Print "ID PublicIPv4 Region Status Created" for the tagged droplet, or empty.
+find_droplet() {
+  doctl compute droplet list \
+    --tag-name "$VPN_TAG" \
+    --format ID,PublicIPv4,Region,Status,Created \
+    --no-header
+}
+
+cmd_up() {
+  require_doctl
+  [[ -f "$VPN_CLOUD_CONFIG" ]] \
+    || die "cloud-config not found: $VPN_CLOUD_CONFIG"
+
+  local existing
+  existing="$(find_droplet)"
+  if [[ -n "$existing" ]]; then
+    echo "droplet already exists:"
+    echo "$existing"
+    return 0
+  fi
+
+  local key rendered
+  key="$(load_authkey)"
+  rendered="$(mktemp -t vpn-cloud-config)"
+  trap 'rm -f "$rendered"' EXIT
+  awk -v k="$key" '{gsub(/__TS_AUTHKEY__/, k); print}' "$VPN_CLOUD_CONFIG" > "$rendered"
+  if grep -q '__TS_AUTHKEY__' "$rendered"; then
+    die "placeholder __TS_AUTHKEY__ still present after rendering — check $VPN_CLOUD_CONFIG"
+  fi
+
+  echo "creating droplet '$VPN_NAME' in $VPN_REGION ($VPN_SIZE, $VPN_IMAGE)..."
+  local args=(
+    compute droplet create "$VPN_NAME"
+    --region "$VPN_REGION"
+    --size "$VPN_SIZE"
+    --image "$VPN_IMAGE"
+    --tag-name "$VPN_TAG"
+    --user-data-file "$rendered"
+    --wait
+    --format ID,PublicIPv4,Region,Status
+    --no-header
+  )
+  if [[ -n "$VPN_SSH_KEYS" ]]; then
+    args+=(--ssh-keys "$(resolve_ssh_keys "$VPN_SSH_KEYS")")
+  fi
+  if [[ "$VPN_ENABLE_PRIVATE_NETWORKING" = "1" ]]; then
+    args+=(--enable-private-networking)
+  fi
+
+  doctl "${args[@]}"
+  echo
+  echo "VM is up. Cloud-init (Tailscale install + join) will run for ~30-90s."
+  echo "Watch from a tailnet client:  tailscale status | grep $VPN_NAME"
+}
+
+cmd_down() {
+  require_doctl
+  local existing id
+  existing="$(find_droplet)"
+  if [[ -z "$existing" ]]; then
+    echo "no droplet tagged '$VPN_TAG' — nothing to do."
+    return 0
+  fi
+
+  id="$(awk '{print $1}' <<< "$existing" | head -n1)"
+  echo "destroying droplet $id ..."
+  doctl compute droplet delete "$id" --force
+  echo "destroyed."
+}
+
+cmd_status() {
+  require_doctl
+  local existing
+  existing="$(find_droplet)"
+  if [[ -z "$existing" ]]; then
+    echo "no droplet tagged '$VPN_TAG'."
+    return 0
+  fi
+  printf 'ID\tIP\tRegion\tStatus\tCreated\n'
+  echo "$existing"
+}
+
+usage() {
+  cat <<EOF
+usage: vpn <up|down|status>
+
+  up      Create the exit-node droplet (idempotent).
+  down    Destroy the exit-node droplet.
+  status  Show whether the droplet exists.
+
+Configurable via env: VPN_NAME, VPN_REGION, VPN_SIZE, VPN_IMAGE, VPN_TAG,
+VPN_SSH_KEYS, VPN_CLOUD_CONFIG. See README.md for details.
+EOF
+}
+
+case "${1:-}" in
+  up)     cmd_up ;;
+  down)   cmd_down ;;
+  status) cmd_status ;;
+  -h|--help|help|"") usage ;;
+  *)      usage; exit 2 ;;
+esac

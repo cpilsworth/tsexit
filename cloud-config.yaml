@@ -1,0 +1,35 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+write_files:
+  - path: /etc/sysctl.d/99-tailscale.conf
+    content: |
+      net.ipv4.ip_forward = 1
+      net.ipv6.conf.all.forwarding = 1
+
+runcmd:
+  # Apply sysctl tweaks
+  - sysctl -p /etc/sysctl.d/99-tailscale.conf
+
+  # Install Tailscale (official repo install script)
+  - curl -fsSL https://tailscale.com/install.sh | sh
+
+  # UDP GRO offload for exit-node throughput (Tailscale-provided systemd unit lands with the package on recent versions)
+  - systemctl enable --now tailscale-udp-gro-forwarding.service || true
+
+  # Bring up the node, advertise as exit node, enable Tailscale SSH
+  - tailscale up
+      --auth-key=__TS_AUTHKEY__
+      --advertise-exit-node
+      --ssh
+      --hostname=do-exit-1
+
+  # Firewall: allow Tailscale's direct port + SSH only over tailnet
+  - ufw --force reset
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 41641/udp
+  - ufw allow from 100.64.0.0/10 to any port 22 proto tcp
+  - ufw --force enable
+
