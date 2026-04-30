@@ -16,15 +16,30 @@ IDs or flags.
 
 ## Prereqs
 
+You'll need:
+
+- **A [DigitalOcean](https://www.digitalocean.com) account** — the droplet host
+  and what you'll be billed by (~$0.006/hr while running, $4/mo flat if you
+  ever leave one up). Generate a personal access token at
+  <https://cloud.digitalocean.com/account/api/tokens> with the
+  `droplet:read,create,delete` scopes. Add `ssh_key:read` if you want the
+  script to resolve SSH keys by name (see `VPN_SSH_KEYS` below).
+- **A [Tailscale](https://tailscale.com) account** — what makes the droplet
+  reachable as an exit node (free tier is fine for personal use). You'll
+  generate a pre-auth key from
+  <https://login.tailscale.com/admin/settings/keys> when setting up secrets
+  (see [Tailscale auth key](#tailscale-auth-key-kept-out-of-git) below).
+- **An SSH key registered with DigitalOcean** named `ssh`, if you want one
+  baked into the droplet for emergency console-less recovery. Optional —
+  the cloud-config enables Tailscale SSH, which is enough for everything.
+
+Then install and authenticate the CLI:
+
 ```bash
 brew install doctl
-doctl auth init   # paste a token from cloud.digitalocean.com/account/api
-doctl account get # confirm it works
+doctl auth init           # paste your DigitalOcean token
+doctl compute droplet list   # confirm it works (lists your droplets)
 ```
-
-You'll also want at least one SSH key registered with DigitalOcean if you ever
-need console-less recovery — but it's optional, since the cloud-config enables
-Tailscale SSH.  This repo expects one named `ssh` and will look it up by name.
 
 ### Tailscale auth key (kept out of git)
 
