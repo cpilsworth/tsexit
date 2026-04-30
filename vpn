@@ -106,7 +106,7 @@ cmd_up() {
 
   local key rendered
   key="$(load_authkey)"
-  rendered="$(mktemp -t vpn-cloud-config)"
+  rendered="$(mktemp -t vpn-cloud-config.XXXXXX)"
   trap 'rm -f "$rendered"' EXIT
   awk -v k="$key" '{gsub(/__TS_AUTHKEY__/, k); print}' "$VPN_CLOUD_CONFIG" > "$rendered"
   if grep -q '__TS_AUTHKEY__' "$rendered"; then
