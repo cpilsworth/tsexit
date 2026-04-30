@@ -42,13 +42,14 @@ finds the key via, in order:
 2. macOS Keychain item named `vpn-tailscale-authkey` (override with
    `VPN_AUTHKEY_KEYCHAIN_ITEM`)
 
-Recommended one-time setup using Keychain:
+Recommended setup using Keychain (works for both initial install and key
+rotation — `-U` updates an existing entry, and omitting the value after `-w`
+makes `security` prompt for it interactively so the key never lands in your
+shell history):
 
 ```bash
-security add-generic-password \
-  -s vpn-tailscale-authkey \
-  -a "$USER" \
-  -w 'tskey-auth-...'   # paste the real key here
+security add-generic-password -U -s vpn-tailscale-authkey -a "$USER" -w
+# (you'll be prompted twice: enter the tskey-auth-... key, then confirm)
 ```
 
 Generate the key in the Tailscale admin console at
