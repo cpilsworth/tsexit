@@ -1,6 +1,6 @@
 # vpn
 
-A throwaway DigitalOcean droplet that runs as a [Tailscale](https://tailscale.com) exit node.
+A script to manage a throwaway DigitalOcean droplet that runs as a [Tailscale](https://tailscale.com) exit node.
 Spin it up when you want VPN, tear it down when you don't.
 
 The droplet is bootstrapped by [`cloud-config.yaml`](./cloud-config.yaml), which:
