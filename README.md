@@ -129,6 +129,14 @@ iOS Shortcut, no always-on box of your own.
 `Actions` tab → `vpn` workflow → `Run workflow` → choose `up` / `down` /
 `status`. Works but takes several taps.
 
+### Trigger from a terminal (`gh` CLI)
+
+```bash
+gh workflow run vpn.yml -f action=up      # or down / status
+gh run watch                              # tail the latest run live
+gh run view --log                         # dump the full log of the latest run
+```
+
 ### Trigger from an iOS Shortcut (one tap)
 
 Create a shortcut with a single **Get Contents of URL** action:
