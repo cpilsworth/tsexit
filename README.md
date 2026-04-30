@@ -24,7 +24,7 @@ doctl account get # confirm it works
 
 You'll also want at least one SSH key registered with DigitalOcean if you ever
 need console-less recovery — but it's optional, since the cloud-config enables
-Tailscale SSH.
+Tailscale SSH.  This repo expects one named `ssh` and will look it up by name.
 
 ### Tailscale auth key (kept out of git)
 
